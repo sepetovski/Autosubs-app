@@ -1,0 +1,42 @@
+{
+  "name": "autosubs",
+  "version": "1.0.0",
+  "description": "AutoSubs App",
+  "author": "Your Name",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:prod": "ELECTRON_LOAD_DIST=true electron .",
+    "dist": "electron-builder"
+  },
+  "build": {
+    "appId": "com.autosubs.app",
+    "productName": "AutoSubs",
+    "asar": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js"
+    ],
+    "extraResources": [
+      { "from": "resources/autosubs-server", "to": "autosubs-server" },
+      { "from": "resources/whisper-cli", "to": "whisper-cli" },
+      { "from": "resources/ffmpeg", "to": "ffmpeg" },
+      { "from": "resources/yt-dlp", "to": "yt-dlp" },
+      { "from": "../frontend/dist", "to": "frontend-dist" }
+    ],
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["arm64"] }
+      ],
+      "category": "public.app-category.video",
+      "identity": null
+    }
+  },
+  "devDependencies": {
+    "electron": "latest",
+    "electron-builder": "latest"
+  }
+}

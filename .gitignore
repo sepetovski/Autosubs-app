@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+backend/venv/
+
+# Build outputs — regenerated fresh on whichever machine builds them
+backend/dist/
+backend/build/
+backend/*.spec
+frontend/dist/
+electron/release/
+
+# Bundled binaries — platform-specific, rebuilt per-OS, too large for git
+electron/resources/
+
+# OS junk
+.DS_Store
+Thumbs.db
