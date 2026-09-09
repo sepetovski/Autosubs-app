@@ -1,6 +1,6 @@
 {
   "name": "autosubs",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AutoSubs App",
   "author": "sepetovski",
   "main": "main.js",
@@ -20,12 +20,12 @@
     "files": [
       "main.js",
       "preload.js",
-      "runtime.js",
-      "runtime.json"
+      "runtime.js"
     ],
     "extraResources": [
       { "from": "../backend", "to": "backend", "filter": ["**/*.py", "assets/**/*"] },
-      { "from": "../frontend/dist", "to": "frontend-dist" }
+      { "from": "../frontend/dist", "to": "frontend-dist" },
+      { "from": "runtime.json", "to": "runtime.json" }
     ],
     "win": {
       "target": [
