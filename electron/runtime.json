@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "assets": {
+    "win32-x64": {
+      "url": "https://github.com/sepetovski/Autosubs-runtime/releases/download/v1.0.0/autosubs-runtime-1.0.0-win32-x64.tar.gz",
+      "sha256": ""
+    },
+    "darwin-arm64": {
+      "url": "https://github.com/sepetovski/Autosubs-runtime/releases/download/v1.0.0/autosubs-runtime-1.0.0-darwin-arm64.tar.gz",
+      "sha256": ""
+    }
+  }
+}

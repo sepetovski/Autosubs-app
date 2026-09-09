@@ -2,41 +2,65 @@
   "name": "autosubs",
   "version": "1.0.0",
   "description": "AutoSubs App",
-  "author": "Your Name",
+  "author": "sepetovski",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "start:prod": "ELECTRON_LOAD_DIST=true electron .",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "dist:publish": "electron-builder --publish always"
   },
   "build": {
     "appId": "com.autosubs.app",
     "productName": "AutoSubs",
-    "asar": false,
+    "asar": true,
     "directories": {
       "output": "release"
     },
     "files": [
       "main.js",
-      "preload.js"
+      "preload.js",
+      "runtime.js",
+      "runtime.json"
     ],
     "extraResources": [
-      { "from": "resources/autosubs-server", "to": "autosubs-server" },
-      { "from": "resources/whisper-cli", "to": "whisper-cli" },
-      { "from": "resources/ffmpeg", "to": "ffmpeg" },
-      { "from": "resources/yt-dlp", "to": "yt-dlp" },
+      { "from": "../backend", "to": "backend", "filter": ["**/*.py", "assets/**/*"] },
       { "from": "../frontend/dist", "to": "frontend-dist" }
     ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    },
     "mac": {
       "target": [
-        { "target": "dmg", "arch": ["arm64"] }
+        { "target": "dmg", "arch": ["arm64"] },
+        { "target": "zip", "arch": ["arm64"] }
       ],
       "category": "public.app-category.video",
-      "identity": null
-    }
+      "identity": null,
+      "hardenedRuntime": false
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "sepetovski",
+        "repo": "Autosubs-app"
+      }
+    ]
   },
   "devDependencies": {
-    "electron": "latest",
-    "electron-builder": "latest"
+    "electron": "44.3.0",
+    "electron-builder": "26.15.3"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.9",
+    "tar": "7.5.22"
   }
 }

@@ -1,7 +1,12 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import axios from "axios";
+import Library from "./Library.jsx";
+import Profile from "./Profile.jsx";
 
-const API = "http://127.0.0.1:8742";
+// In the packaged app the backend listens on a dynamically-chosen free
+// port (see electron/main.js); preload.js exposes it as electronAPI.apiBase.
+// Outside Electron (plain browser dev) it falls back to the fixed dev port.
+export const API = window.electronAPI?.apiBase || "http://127.0.0.1:8742";
 
 const ASPECT_OPTIONS = [
   { label: "9:16 — Crop Center  (Reels/Shorts)", value: "9:16"     },
@@ -30,7 +35,16 @@ const OUTPUT_DIMS = {
 };
 
 const QUALITIES = ["4K / Best","1080p","720p","480p","360p","240p","Audio (MP3)"];
-const MODELS    = ["tiny","base","small","medium","large"];
+// CPU-only transcription (the default runtime ships torch-cpu, no CUDA) —
+// label the slower models so people don't pick "large" on a full-length
+// video and think the app has frozen.
+const MODEL_OPTIONS = [
+  { value: "tiny",   label: "tiny — fastest" },
+  { value: "base",   label: "base — fast" },
+  { value: "small",  label: "small — balanced (recommended)" },
+  { value: "medium", label: "medium — slow on CPU" },
+  { value: "large",  label: "large — very slow on CPU" },
+];
 const LANGS     = ["English","Spanish","French","German","Italian","Portuguese","Auto-detect"];
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
@@ -39,6 +53,13 @@ function fmtTime(s) {
   const m = Math.floor(s / 60);
   const sec = (s % 60).toFixed(2).padStart(5, "0");
   return `${m}:${sec}`;
+}
+
+function fmtElapsed(ms) {
+  if (!ms || isNaN(ms) || ms < 0) return "0:00";
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  return `${m}:${(s % 60).toString().padStart(2, "0")}`;
 }
 
 function containRect(containerW, containerH, contentW, contentH) {
@@ -397,7 +418,7 @@ export default function App() {
   const [aspect, setAspect]           = useState("9:16");
   const [bgColor, setBgColor]         = useState("#000000");
   const [videoYOffset, setVideoYOffset] = useState(0.5);
-  const [model, setModel]             = useState("medium");
+  const [model, setModel]             = useState("small");
   const [language, setLanguage]       = useState("English");
   const [colorBase, setColorBase]     = useState("#ffffff");
   const [colorActive, setColorActive] = useState("#ffd200");
@@ -416,6 +437,29 @@ export default function App() {
   const [error, setError]             = useState("");
   const [showLogs, setShowLogs]       = useState(false);
   const [showOutputPlayer, setShowOutputPlayer] = useState(false);
+  const [elapsed, setElapsed]         = useState(0);
+  const jobStartRef = useRef(null);
+  const [backendCrashed, setBackendCrashed] = useState(false);
+  const [restartingBackend, setRestartingBackend] = useState(false);
+  const [updateInfo, setUpdateInfo]   = useState(null);
+  const [view, setView]               = useState("editor"); // editor | library | profile
+  const [currentProjectId, setCurrentProjectId] = useState(null);
+  const [projectSaveMsg, setProjectSaveMsg] = useState("");
+  const [badgeToast, setBadgeToast]   = useState(null);
+  const knownBadgesRef = useRef(null);
+
+  // Multi-cut clip finder
+  const [clips, setClips]               = useState([]);
+  const [selectedClips, setSelectedClips] = useState(new Set());
+  const [analyzing, setAnalyzing]       = useState(false);
+  const [clipMinLen, setClipMinLen]     = useState(20);
+  const [clipMaxLen, setClipMaxLen]     = useState(60);
+  const [clipCount, setClipCount]       = useState(6);
+  const [batchOutputs, setBatchOutputs] = useState([]);
+  const [transcriptPath, setTranscriptPath] = useState("");
+  const [clipAddSubtitles, setClipAddSubtitles] = useState(true);
+  const [forceRetranscribe, setForceRetranscribe] = useState(false);
+  const autoRunRef = useRef(false);
 
   const videoElRef      = useRef(null);
   const videoCleanupRef = useRef(null);
@@ -519,6 +563,8 @@ export default function App() {
       setOutputPath(""); setError(""); setPhase("");
       setProgress(0); setProgressText(""); setLogs([]);
       setThumbnails([]);
+      setClips([]); setSelectedClips(new Set()); setBatchOutputs([]);
+      setTranscriptPath("");
       setOutputName((res.data.filename?.replace(/\.[^.]+$/, "") || "output") + "_subtitled");
 
       setThumbsLoading(true);
@@ -531,6 +577,52 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    if (!running && !preparing && !analyzing) return;
+    jobStartRef.current = Date.now();
+    setElapsed(0);
+    const id = setInterval(() => setElapsed(Date.now() - jobStartRef.current), 500);
+    return () => clearInterval(id);
+  }, [running, preparing, analyzing]);
+
+  useEffect(() => {
+    if (!window.electronAPI) return;
+    window.electronAPI.onBackendCrashed(() => setBackendCrashed(true));
+    window.electronAPI.onUpdateInfo((info) => setUpdateInfo(info));
+    window.electronAPI.getUpdateInfo?.().then((info) => { if (info) setUpdateInfo(info); });
+  }, []);
+
+  // One-time baseline so badges the user already had before this session
+  // don't all "unlock" the first time we check.
+  useEffect(() => {
+    axios.get(`${API}/stats`).then(r => {
+      knownBadgesRef.current = new Set(
+        (r.data.badges || []).filter(b => b.unlocked).map(b => b.id)
+      );
+    }).catch(() => { knownBadgesRef.current = new Set(); });
+  }, []);
+
+  const checkNewBadges = async () => {
+    try {
+      const r = await axios.get(`${API}/stats`);
+      const known = knownBadgesRef.current || new Set();
+      const newlyUnlocked = (r.data.badges || []).filter(b => b.unlocked && !known.has(b.id));
+      if (newlyUnlocked.length) {
+        setBadgeToast(newlyUnlocked[0]);
+        setTimeout(() => setBadgeToast(null), 5000);
+      }
+      knownBadgesRef.current = new Set((r.data.badges || []).filter(b => b.unlocked).map(b => b.id));
+    } catch { /* non-critical */ }
+  };
+
+  const handleRestartBackend = async () => {
+    if (!window.electronAPI?.restartBackend) return;
+    setRestartingBackend(true);
+    const res = await window.electronAPI.restartBackend();
+    setRestartingBackend(false);
+    if (res?.ok) setBackendCrashed(false);
+  };
+
   const startSSE = () => {
     if (evtSrcRef.current) evtSrcRef.current.close();
     const es = new EventSource(`${API}/progress`);
@@ -539,13 +631,40 @@ export default function App() {
       if (msg.type === "phase")    setPhase(msg.text);
       if (msg.type === "progress") { setProgress(msg.pct); setProgressText(msg.text); }
       if (msg.type === "log")      addLog(msg.text);
+      if (msg.type === "clip_done") {
+        setBatchOutputs(list => [...list, msg.output_path]);
+      }
       if (msg.type === "done") {
         es.close();
-        if (msg.op === "render") {
+        if (msg.op === "analyze") {
+          setAnalyzing(false); setProgress(100);
+          const found = msg.clips || [];
+          setClips(found);
+          setSelectedClips(new Set(found.map((_, i) => i)));
+          setTranscriptPath(msg.transcript_path || "");
+          if (autoRunRef.current) {
+            autoRunRef.current = false;
+            if (found.length) {
+              setPhase(`✔  ${found.length} clips found — rendering…`);
+              renderClipsNow(found, msg.transcript_path || "");
+            } else {
+              setPhase("No clips found");
+            }
+          } else {
+            setPhase(found.length ? `✔  ${found.length} clips found` : "No clips found");
+          }
+        } else if (msg.op === "batch") {
+          setRunning(false); setProgress(100);
+          setBatchOutputs(msg.outputs || []);
+          setOutputPath(msg.output_path || "");
+          setPhase(`✔  ${(msg.outputs || []).length} clips rendered`);
+          checkNewBadges();
+        } else if (msg.op === "render") {
           setRunning(false); setProgress(100);
           setOutputPath(msg.output_path || "");
           setPhase("✔  Complete!");
           setShowOutputPlayer(true);
+          checkNewBadges();
         } else if (msg.op === "download") {
           setRunning(false); setProgress(100);
           setPhase("✔  Downloaded!");
@@ -557,8 +676,14 @@ export default function App() {
         }
       }
       if (msg.type === "error") {
-        setRunning(false); setPreparing(false);
+        setRunning(false); setPreparing(false); setAnalyzing(false);
+        autoRunRef.current = false;
         setError(msg.text); setPhase("✘  Failed"); es.close();
+      }
+      if (msg.type === "cancelled") {
+        setRunning(false); setPreparing(false); setAnalyzing(false);
+        autoRunRef.current = false;
+        setPhase(msg.text || "Cancelled"); es.close();
       }
     };
     evtSrcRef.current = es;
@@ -594,6 +719,158 @@ export default function App() {
     }
   };
 
+  const buildRenderSettings = () => ({
+    video_path:     videoPath,
+    output_name:    outputName,
+    add_subtitles:  addSubtitles,
+    text_overlays:  textOverlays.map(t => ({
+      text: t.text, y: t.y, size: t.size, color: t.color,
+    })),
+    aspect,
+    bg_color:       bgColor,
+    video_y_offset: videoYOffset,
+    model, language,
+    color_base:     colorBase,
+    color_active:   colorActive,
+    base_size:      baseSize,
+    active_size:    activeSize,
+    subtitle_y:     subtitleY,
+    // Reuse the full-video transcript from a scan instead of re-running
+    // Whisper on every trimmed clip, unless the user explicitly wants
+    // a fresh, per-clip transcription (e.g. for higher-quality models).
+    transcript_json: (!forceRetranscribe && transcriptPath) ? transcriptPath : null,
+  });
+
+  // ── Projects: save the full editor state, reopen it later ────────────────
+  const handleSaveProject = async () => {
+    if (!videoPath) { setError("Load a video first."); return; }
+    const settings = {
+      ...buildRenderSettings(),
+      inPoint, outPoint,
+      clipMinLen, clipMaxLen, clipCount, clipAddSubtitles, forceRetranscribe,
+    };
+    try {
+      const res = await axios.post(`${API}/projects`, {
+        id: currentProjectId,
+        name: outputName || videoInfo?.filename || "Untitled project",
+        settings,
+        clips,
+        transcript_path: transcriptPath,
+      });
+      setCurrentProjectId(res.data.id);
+      setProjectSaveMsg(`✔ Saved "${res.data.name}"`);
+      setTimeout(() => setProjectSaveMsg(""), 3000);
+    } catch {
+      setError("Could not save project.");
+    }
+  };
+
+  const handleOpenProject = async (project) => {
+    setView("editor");
+    const s = project.settings || {};
+    if (s.video_path) await finishLoadingVideo(s.video_path);
+    setAddSubtitles(s.add_subtitles ?? true);
+    setTextOverlays((s.text_overlays || []).map(t => ({ id: Date.now() + Math.random(), ...t })));
+    setAspect(s.aspect || "9:16");
+    setBgColor(s.bg_color || "#000000");
+    setVideoYOffset(s.video_y_offset ?? 0.5);
+    setModel(s.model || "small");
+    setLanguage(s.language || "English");
+    setColorBase(s.color_base || "#ffffff");
+    setColorActive(s.color_active || "#ffd200");
+    setBaseSize(s.base_size ?? 55);
+    setActiveSize(s.active_size ?? 80);
+    setSubtitleY(s.subtitle_y ?? 0.82);
+    setOutputName(project.name || "");
+    if (s.inPoint != null) setInPoint(s.inPoint);
+    if (s.outPoint != null) setOutPoint(s.outPoint);
+    setClipMinLen(s.clipMinLen ?? 20);
+    setClipMaxLen(s.clipMaxLen ?? 60);
+    setClipCount(s.clipCount ?? 6);
+    setClipAddSubtitles(s.clipAddSubtitles ?? true);
+    setForceRetranscribe(s.forceRetranscribe ?? false);
+    setClips(project.clips || []);
+    setSelectedClips(new Set((project.clips || []).map((_, i) => i)));
+    setTranscriptPath(project.transcript_path || "");
+    setCurrentProjectId(project.id);
+  };
+
+  const handleAnalyze = async () => {
+    if (preparing || running || analyzing) return;
+    if (!videoPath) { setError("Load a video first."); return; }
+    setAnalyzing(true); setError(""); setBatchOutputs([]);
+    setPhase("Scanning…"); setProgress(0); setLogs([]);
+    startSSE();
+    try {
+      await axios.post(`${API}/analyze`, {
+        path: videoPath, model: "tiny", language,
+        min_len: clipMinLen, max_len: clipMaxLen, want: clipCount,
+      });
+    } catch {
+      setAnalyzing(false);
+      setError("Could not start scan — is the backend running?");
+    }
+  };
+
+  const toggleClip = (i) => {
+    setSelectedClips(prev => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
+  };
+
+  const previewClip = (c) => {
+    setInPoint(c.start); setOutPoint(c.end); seekTo(c.start);
+  };
+
+  // Shared by the manual "Render Selected" button and the one-click Auto
+  // Run flow. Takes the clip list explicitly (rather than reading
+  // selectedClips state) so Auto Run can render immediately with
+  // freshly-scanned clips without waiting on a state-commit round trip.
+  const renderClipsNow = async (clipList, tpath) => {
+    if (!clipList.length) { setError("No clips to render."); return; }
+    setRunning(true); setError(""); setOutputPath(""); setBatchOutputs([]);
+    setPhase("Starting batch…"); setProgress(0); setLogs([]);
+    startSSE();
+    const useTranscript = !forceRetranscribe && (tpath || transcriptPath);
+    await axios.post(`${API}/render-batch`, {
+      ...buildRenderSettings(),
+      add_subtitles:   clipAddSubtitles,
+      transcript_json: useTranscript || null,
+      clips: clipList.map(c => ({ start: c.start, end: c.end, title: c.title })),
+    });
+  };
+
+  const handleRenderBatch = () => {
+    if (preparing || running || analyzing) return;
+    const chosen = clips.filter((_, i) => selectedClips.has(i));
+    if (!chosen.length) { setError("Select at least one clip."); return; }
+    renderClipsNow(chosen, transcriptPath);
+  };
+
+  // One button: scan, then automatically render every clip found — no
+  // manual review step. handleAnalyze's own SSE "done" handler checks
+  // autoRunRef and calls renderClipsNow() once clips arrive.
+  const handleAutoRun = async () => {
+    if (preparing || running || analyzing) return;
+    if (!videoPath) { setError("Load a video first."); return; }
+    autoRunRef.current = true;
+    setAnalyzing(true); setError(""); setBatchOutputs([]);
+    setPhase("Scanning…"); setProgress(0); setLogs([]);
+    startSSE();
+    try {
+      await axios.post(`${API}/analyze`, {
+        path: videoPath, model: "tiny", language,
+        min_len: clipMinLen, max_len: clipMaxLen, want: clipCount,
+      });
+    } catch {
+      autoRunRef.current = false;
+      setAnalyzing(false);
+      setError("Could not start scan — is the backend running?");
+    }
+  };
+
   const handleRender = async () => {
     if (preparing) return;
     if (!videoPath) { setError("Load a video first."); return; }
@@ -603,21 +880,7 @@ export default function App() {
     setPhase("Starting…"); setProgress(0); setLogs([]);
     startSSE();
     await axios.post(`${API}/render`, {
-      video_path:     videoPath,
-      output_name:    outputName,
-      add_subtitles:  addSubtitles,
-      text_overlays:  textOverlays.map(t => ({
-        text: t.text, y: t.y, size: t.size, color: t.color,
-      })),
-      aspect,
-      bg_color:       bgColor,
-      video_y_offset: videoYOffset,
-      model, language,
-      color_base:     colorBase,
-      color_active:   colorActive,
-      base_size:      baseSize,
-      active_size:    activeSize,
-      subtitle_y:     subtitleY,
+      ...buildRenderSettings(),
       do_trim:        shouldTrim,
       trim_start:     shouldTrim ? inPoint  : null,
       trim_end:       shouldTrim ? outPoint : null,
@@ -634,8 +897,13 @@ export default function App() {
   };
 
   const handleCancel = async () => {
+    autoRunRef.current = false;
+    setRunning(false); setPreparing(false); setAnalyzing(false); setPhase("Cancelled");
     await axios.post(`${API}/cancel`);
-    setRunning(false); setPreparing(false); setPhase("Cancelled");
+    // The backend also pushes its own "cancelled" SSE message, but we
+    // don't wait around for it — close the stream from our side right
+    // away so the UI feels instant even if the worker thread is still
+    // unwinding a subprocess in the background.
     if (evtSrcRef.current) evtSrcRef.current.close();
   };
 
@@ -672,7 +940,7 @@ export default function App() {
     ? (stageRect.height - fullFrameVideoHeight) * videoYOffset : 0;
 
   return (
-    <div style={{ display:"flex", height:"100vh", background:C.bg,
+    <div style={{ display:"flex", flexDirection:"column", height:"100vh", background:C.bg,
                   fontFamily:C.mono, color:C.text, overflow:"hidden" }}>
 
       {showOutputPlayer && outputSrc && (
@@ -680,21 +948,39 @@ export default function App() {
                       onClose={() => setShowOutputPlayer(false)}/>
       )}
 
+      {badgeToast && (
+        <div style={{ position:"fixed", top:70, right:20, zIndex:2000,
+                      background:C.card, border:`1px solid ${C.amber}`, borderRadius:6,
+                      padding:"12px 16px", display:"flex", alignItems:"center", gap:10,
+                      boxShadow:"0 4px 20px rgba(0,0,0,0.5)" }}>
+          <span style={{ fontSize:26 }}>{badgeToast.emoji}</span>
+          <div>
+            <div style={{ fontSize:9, color:C.amber, letterSpacing:1, fontWeight:"bold" }}>BADGE UNLOCKED</div>
+            <div style={{ fontSize:12, fontWeight:"bold" }}>{badgeToast.name}</div>
+            <div style={{ fontSize:9, color:C.muted }}>{badgeToast.desc}</div>
+          </div>
+        </div>
+      )}
+
+      <TopNav view={view} setView={setView}
+              backendCrashed={backendCrashed} restartingBackend={restartingBackend}
+              onRestartBackend={handleRestartBackend}
+              updateInfo={updateInfo}/>
+
+      {view === "library" && (
+        <Library api={API}
+                 onUseAsSource={(path) => { setView("editor"); loadVideo(path); }}
+                 onOpenProject={handleOpenProject}/>
+      )}
+      {view === "profile" && <Profile api={API} />}
+
+      {view === "editor" && (
+      <div style={{ flex:1, display:"flex", overflow:"hidden", minHeight:0 }}>
+
       {/* ══════════ LEFT PANEL ══════════ */}
       <div style={{ width:288, flexShrink:0, display:"flex", flexDirection:"column",
                     background:C.surface, borderRight:`1px solid ${C.border}`,
                     overflow:"hidden" }}>
-
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
-                      padding:"10px 14px", borderBottom:`3px solid ${C.accent}`,
-                      flexShrink:0 }}>
-          <div>
-            <span style={{ fontSize:16, fontWeight:"bold" }}>AutoSubs</span>
-            <span style={{ fontSize:9, color:C.accent, letterSpacing:3 }}> CRF</span>
-          </div>
-          <span style={{ fontSize:9, background:"#1d4ed8", color:"#fff",
-                          padding:"2px 8px", borderRadius:3 }}>macOS</span>
-        </div>
 
         {error && (
           <div style={{ background:"#450a0a", color:"#fca5a5", fontSize:10,
@@ -772,6 +1058,121 @@ export default function App() {
             )}
           </Sec>
 
+          <Sec label="FIND  CLIPS">
+            <Row label="LENGTH">
+              <input type="number" style={ST.num} value={clipMinLen} min={5}
+                     onChange={e => setClipMinLen(+e.target.value)}/>
+              <span style={ST.dim}>to</span>
+              <input type="number" style={ST.num} value={clipMaxLen} min={10}
+                     onChange={e => setClipMaxLen(+e.target.value)}/>
+              <span style={ST.dim}>sec</span>
+            </Row>
+            <Row label="COUNT">
+              <input type="number" style={ST.num} value={clipCount} min={1} max={20}
+                     onChange={e => setClipCount(+e.target.value)}/>
+            </Row>
+            <Row>
+              <label style={{ display:"flex", alignItems:"center", gap:5,
+                              fontSize:9, color:C.sub, cursor:"pointer" }}>
+                <input type="checkbox" checked={clipAddSubtitles}
+                       onChange={e => setClipAddSubtitles(e.target.checked)}
+                       style={{ accentColor:C.amber, margin:0 }}/>
+                Add subtitles to clips
+              </label>
+            </Row>
+            <Row>
+              <label style={{ display:"flex", alignItems:"center", gap:5,
+                              fontSize:9, color:C.sub, cursor:"pointer" }}>
+                <input type="checkbox" checked={forceRetranscribe}
+                       onChange={e => setForceRetranscribe(e.target.checked)}
+                       style={{ accentColor:C.amber, margin:0 }}/>
+                Re-transcribe each clip (slower, ignores scan cache)
+              </label>
+            </Row>
+
+            <div style={{ display:"flex", gap:6, marginTop:6, marginBottom:6 }}>
+              <button
+                style={{ ...ST.btn, ...((running || preparing || analyzing || !videoPath) ? ST.btnOff : ST.btnGhost),
+                         flex:1, fontSize:11 }}
+                onClick={handleAnalyze}
+                disabled={running || preparing || analyzing || !videoPath}>
+                {analyzing ? "⟳  SCANNING…" : "🔍  SCAN FOR CLIPS"}
+              </button>
+              {(analyzing || running) && (
+                <button style={{ ...ST.btn, ...ST.btnCancel }} onClick={handleCancel}>✕</button>
+              )}
+            </div>
+            <button
+              style={{ ...ST.btn, ...((running || preparing || analyzing || !videoPath) ? ST.btnOff : ST.btnRender),
+                       width:"100%", fontSize:11, marginBottom:8 }}
+              onClick={handleAutoRun}
+              disabled={running || preparing || analyzing || !videoPath}>
+              ⚡  AUTO: FIND &amp; RENDER ALL
+            </button>
+            <div style={{ fontSize:8, color:C.muted, marginBottom:8, marginTop:-4 }}>
+              Auto scans, then renders every clip found — no review step.
+              Use Scan for Clips instead to pick clips by hand first.
+            </div>
+
+            {clips.length > 0 && (<>
+              <div style={{ maxHeight:260, overflowY:"auto", marginBottom:8 }}>
+                {clips.map((c, i) => {
+                  const sel = selectedClips.has(i);
+                  return (
+                    <div key={i}
+                         style={{ background:C.card, borderRadius:3, padding:"7px 8px",
+                                  marginBottom:6,
+                                  border:`1px solid ${sel ? C.accent : C.border}`,
+                                  cursor:"pointer" }}
+                         onClick={() => previewClip(c)}>
+                      <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                        <input type="checkbox" checked={sel}
+                               onClick={e => e.stopPropagation()}
+                               onChange={() => toggleClip(i)}
+                               style={{ accentColor:C.amber, margin:0, flexShrink:0 }}/>
+                        <span style={{ flex:1, fontSize:10, color:C.text,
+                                       overflow:"hidden", textOverflow:"ellipsis",
+                                       whiteSpace:"nowrap" }}>
+                          {c.title || `Clip ${i+1}`}
+                        </span>
+                        <span style={{ fontSize:9, color:"#111010", background:C.amber,
+                                       padding:"1px 5px", borderRadius:2,
+                                       fontWeight:"bold", flexShrink:0 }}>{c.score}</span>
+                      </div>
+                      <div style={{ fontSize:9, color:C.sub, fontFamily:C.mono, marginTop:3 }}>
+                        {fmtTime(c.start)} → {fmtTime(c.end)}
+                        <span style={{ color:C.amber }}>  ({Math.round(c.end - c.start)}s)</span>
+                      </div>
+                      <div style={{ fontSize:8, color:C.muted, marginTop:2 }}>{c.reason}</div>
+                    </div>
+                  );
+                })}
+              </div>
+              <button
+                style={{ ...ST.btn, ...((running || preparing || analyzing || selectedClips.size === 0) ? ST.btnOff : ST.btnRender),
+                         width:"100%", fontSize:11 }}
+                onClick={handleRenderBatch}
+                disabled={running || preparing || analyzing || selectedClips.size === 0}>
+                🎬  RENDER SELECTED ({selectedClips.size})
+              </button>
+            </>)}
+
+            {batchOutputs.length > 0 && (
+              <div style={{ marginTop:8 }}>
+                {batchOutputs.map((p, i) => (
+                  <div key={i}
+                       style={{ padding:"5px 8px", background:"#162016", borderRadius:3,
+                                border:`1px solid ${C.green}`, cursor:"pointer",
+                                marginBottom:4, fontSize:9, color:C.green,
+                                wordBreak:"break-all" }}
+                       onClick={() => { setOutputPath(p); setShowOutputPlayer(true); }}>
+                    ✔ {p.split(/[\\/]/).pop()}
+                  </div>
+                ))}
+              </div>
+            )}
+          </Sec>
+
           <Sec label="TEXT  OVERLAYS">
             {textOverlays.map((t) => (
               <div key={t.id} style={{
@@ -835,9 +1236,8 @@ export default function App() {
             <Sec label="TRANSCRIPTION">
               <Row label="MODEL">
                 <select style={ST.sel} value={model} onChange={e => setModel(e.target.value)}>
-                  {MODELS.map(m => <option key={m}>{m}</option>)}
+                  {MODEL_OPTIONS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                 </select>
-                <span style={ST.dim}>tiny→fast large→best</span>
               </Row>
               <Row label="LANG">
                 <select style={ST.sel} value={language} onChange={e => setLanguage(e.target.value)}>
@@ -890,7 +1290,15 @@ export default function App() {
               )}
             </div>
 
-            {(running || preparing || progress > 0) && (
+            <button style={{ ...ST.btn, ...ST.btnGhost, width:"100%", marginBottom:8 }}
+                    onClick={handleSaveProject} disabled={!videoPath}>
+              💾  SAVE PROJECT{currentProjectId ? " (UPDATE)" : ""}
+            </button>
+            {projectSaveMsg && (
+              <div style={{ fontSize:9, color:C.green, marginTop:-4, marginBottom:8 }}>{projectSaveMsg}</div>
+            )}
+
+            {(running || preparing || analyzing || progress > 0) && (
               <div style={{ marginBottom:8 }}>
                 <div style={{ fontSize:10, color:C.amber,
                               fontWeight:"bold", marginBottom:4 }}>{phase}</div>
@@ -898,7 +1306,16 @@ export default function App() {
                   <div style={{ background:C.amber, height:"100%", borderRadius:3,
                                 width:`${progress}%`, transition:"width 0.35s ease" }}/>
                 </div>
-                <div style={{ fontSize:9, color:C.muted, marginTop:2 }}>{progressText}</div>
+                <div style={{ display:"flex", justifyContent:"space-between",
+                              fontSize:9, color:C.muted, marginTop:2 }}>
+                  <span>{progressText}</span>
+                  <span>
+                    {fmtElapsed(elapsed)}
+                    {progress > 3 && progress < 100
+                      ? ` · ~${fmtElapsed(elapsed * (100 - progress) / progress)} left`
+                      : ""}
+                  </span>
+                </div>
               </div>
             )}
 
@@ -1066,6 +1483,69 @@ export default function App() {
         />
 
       </div>
+      </div>
+      )}
+    </div>
+  );
+}
+
+// ── Top navigation ──────────────────────────────────────────────────────────
+function TopNav({ view, setView, backendCrashed, restartingBackend, onRestartBackend, updateInfo }) {
+  const tabs = [
+    { id: "editor",  label: "EDITOR"  },
+    { id: "library", label: "LIBRARY" },
+    { id: "profile", label: "PROFILE" },
+  ];
+  return (
+    <div style={{ flexShrink:0 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:2,
+                    padding:"8px 14px", borderBottom:`3px solid ${C.accent}`,
+                    background:C.surface }}>
+        <span style={{ fontSize:16, fontWeight:"bold", marginRight:4 }}>AutoSubs</span>
+        {tabs.map(t => (
+          <button key={t.id} onClick={() => setView(t.id)}
+                  style={{
+                    background: view === t.id ? C.card : "none",
+                    border: "none", color: view === t.id ? C.amber : C.sub,
+                    fontFamily: C.mono, fontSize: 10, fontWeight: "bold",
+                    letterSpacing: 1, padding: "5px 12px", borderRadius: 3,
+                    cursor: "pointer",
+                  }}>{t.label}</button>
+        ))}
+        <div style={{ flex:1 }}/>
+        {updateInfo?.available && (
+          <button
+            onClick={() => window.electronAPI?.installUpdate?.()}
+            style={{ background:"#14532d", border:`1px solid ${C.green}`, color:"#bbf7d0",
+                      fontFamily:C.mono, fontSize:9, padding:"4px 10px", borderRadius:3,
+                      cursor:"pointer", marginRight:8 }}>
+            ⇩ {updateInfo.readyToInstall
+                  ? `Restart to update (v${updateInfo.version})`
+                  : `Update available (v${updateInfo.version}) — click to download`}
+          </button>
+        )}
+        <span style={{ fontSize:9, background:"#1d4ed8", color:"#fff",
+                        padding:"2px 8px", borderRadius:3 }}>
+          {navigator.platform.toLowerCase().includes("mac") ? "macOS" : "Windows"}
+        </span>
+      </div>
+      {backendCrashed && (
+        <div style={{ background:"#450a0a", color:"#fca5a5", fontSize:10,
+                      padding:"7px 14px", display:"flex", alignItems:"center",
+                      gap:10 }}>
+          ⚠ The AutoSubs engine stopped unexpectedly.
+          <button onClick={onRestartBackend} disabled={restartingBackend}
+                  style={{ background:"none", border:"1px solid #fca5a5", color:"#fca5a5",
+                            borderRadius:3, padding:"2px 8px", cursor:"pointer", fontSize:9 }}>
+            {restartingBackend ? "Restarting…" : "Restart engine"}
+          </button>
+          <button onClick={() => window.electronAPI?.openBackendLog?.()}
+                  style={{ background:"none", border:"1px solid #fca5a5", color:"#fca5a5",
+                            borderRadius:3, padding:"2px 8px", cursor:"pointer", fontSize:9 }}>
+            Open log
+          </button>
+        </div>
+      )}
     </div>
   );
 }

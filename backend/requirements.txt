@@ -1,0 +1,18 @@
+# AutoSubs backend runtime dependencies.
+#
+# torch is pulled from the CPU-only wheel index — this alone saves ~3-4x
+# the install size vs. the default CUDA wheels, and the app doesn't use
+# CUDA torch anyway (GPU video *encoding* goes through ffmpeg's h264_nvenc,
+# unrelated to this). If you ever want CUDA-accelerated transcription,
+# install torch separately from https://pytorch.org/get-started/locally/
+# before running `pip install -r requirements.txt --no-deps` for the rest.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+fastapi==0.141.1
+uvicorn==0.52.4
+pydantic==2.13.5
+python-multipart==0.0.32
+pillow==11.3.0
+openai-whisper==20250625
+torch==2.14.0
+yt-dlp==2026.8.19

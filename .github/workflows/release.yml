@@ -1,0 +1,59 @@
+name: Release
+
+# Builds and publishes the AutoSubs app installer for Windows and macOS
+# whenever a version tag is pushed. This is the *small* app bundle only
+# (Electron + frontend + backend .py source) — see build-runtime.yml for
+# the separately-versioned heavy runtime that electron-updater doesn't
+# need to re-download on every release.
+#
+# Usage:
+#   1. Bump "version" in electron/package.json.
+#   2. git commit, then: git tag vX.Y.Z && git push origin vX.Y.Z
+#   3. This workflow builds both platforms and uploads the installers,
+#      latest.yml / latest-mac.yml and blockmaps to the GitHub Release
+#      that electron-updater (Windows) and the manual-check banner (macOS)
+#      both read from.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Install electron dependencies
+        working-directory: electron
+        run: npm ci
+
+      - name: Build & publish installer
+        working-directory: electron
+        run: npm run dist:publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Unsigned builds — see README for the SmartScreen / Gatekeeper
+          # notes shown to users. Add CSC_LINK / CSC_KEY_PASSWORD (Windows)
+          # and APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID +
+          # CSC_LINK (macOS notarization) here once you have certificates.

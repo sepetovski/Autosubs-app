@@ -1,0 +1,128 @@
+name: Build runtime
+
+# Builds the heavy, rarely-changing "runtime" bundle (a standalone Python
+# interpreter + torch/openai-whisper/fastapi/etc + ffmpeg) and publishes it
+# as a tarball to the sepetovski/Autosubs-runtime GitHub repo's releases.
+# The app installer itself never contains this — electron/runtime.js
+# downloads it once per version into the user's app-data folder.
+#
+# Run this manually whenever backend/requirements.txt or the ffmpeg
+# version changes — NOT on every app release. Most app updates should
+# reuse the runtime version that's already on users' machines.
+#
+# Setup required once:
+#   1. Create the sepetovski/Autosubs-runtime repo (public, for free storage/bandwidth).
+#   2. Create a fine-grained PAT with "contents: write" on that repo and
+#      add it to this repo's secrets as RUNTIME_REPO_TOKEN.
+#   3. After a run, copy the printed sha256 values into electron/runtime.json.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_version:
+        description: 'Runtime version to publish (e.g. 1.0.0)'
+        required: true
+        default: '1.0.0'
+
+env:
+  PYTHON_BUILD_TAG: '20241016'
+  PYTHON_VERSION: '3.11.10'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform_key: win32-x64
+            py_asset: cpython-3.11.10+20241016-x86_64-pc-windows-msvc-shared-install_only.tar.gz
+          - os: macos-14
+            platform_key: darwin-arm64
+            py_asset: cpython-3.11.10+20241016-aarch64-apple-darwin-install_only.tar.gz
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Standalone Python interpreter ──────────────────────────────────
+      - name: Download standalone Python
+        shell: bash
+        run: |
+          mkdir -p work/python
+          curl -L -o python.tar.gz \
+            "https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_BUILD_TAG}/${{ matrix.py_asset }}"
+          tar -xzf python.tar.gz -C work/python --strip-components=1
+
+      - name: Install backend dependencies into the runtime's Python
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            PY="work/python/python.exe"
+          else
+            PY="work/python/bin/python3"
+          fi
+          "$PY" -m ensurepip --upgrade
+          "$PY" -m pip install --upgrade pip
+          "$PY" -m pip install -r backend/requirements.txt
+
+      # ── ffmpeg / ffprobe ────────────────────────────────────────────────
+      - name: Get ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p work/ffmpeg
+          curl -L -o ffmpeg.zip \
+            "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
+          unzip -q ffmpeg.zip -d ffmpeg_extracted
+          BIN_DIR=$(dirname "$(find ffmpeg_extracted -name ffmpeg.exe)")
+          cp "$BIN_DIR/ffmpeg.exe" "$BIN_DIR/ffprobe.exe" work/ffmpeg/
+
+      - name: Get ffmpeg (macOS, via Homebrew)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p work/ffmpeg
+          brew install ffmpeg
+          cp "$(brew --prefix ffmpeg)/bin/ffmpeg" work/ffmpeg/
+          cp "$(brew --prefix ffmpeg)/bin/ffprobe" work/ffmpeg/
+
+      # ── Package ─────────────────────────────────────────────────────────
+      - name: Create tarball
+        shell: bash
+        run: |
+          cd work
+          tar -czf "../autosubs-runtime-${{ inputs.runtime_version }}-${{ matrix.platform_key }}.tar.gz" python ffmpeg
+
+      - name: Compute checksum
+        id: sha
+        shell: bash
+        run: |
+          FILE="autosubs-runtime-${{ inputs.runtime_version }}-${{ matrix.platform_key }}.tar.gz"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            HASH=$(sha256sum "$FILE" | cut -d' ' -f1)
+          else
+            HASH=$(shasum -a 256 "$FILE" | cut -d' ' -f1)
+          fi
+          echo "sha256=$HASH" >> "$GITHUB_OUTPUT"
+          echo "### ${{ matrix.platform_key }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "sha256: \`$HASH\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload to Autosubs-runtime releases
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: sepetovski/Autosubs-runtime
+          token: ${{ secrets.RUNTIME_REPO_TOKEN }}
+          tag_name: v${{ inputs.runtime_version }}
+          name: Runtime v${{ inputs.runtime_version }}
+          files: autosubs-runtime-${{ inputs.runtime_version }}-${{ matrix.platform_key }}.tar.gz
+          fail_on_unmatched_files: true
+
+      - name: Print runtime.json snippet
+        shell: bash
+        run: |
+          echo '"${{ matrix.platform_key }}": {' >> snippet.txt
+          echo '  "url": "https://github.com/sepetovski/Autosubs-runtime/releases/download/v${{ inputs.runtime_version }}/autosubs-runtime-${{ inputs.runtime_version }}-${{ matrix.platform_key }}.tar.gz",' >> snippet.txt
+          echo '  "sha256": "${{ steps.sha.outputs.sha256 }}"' >> snippet.txt
+          echo '},' >> snippet.txt
+          cat snippet.txt >> "$GITHUB_STEP_SUMMARY"
