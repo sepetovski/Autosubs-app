@@ -56,6 +56,9 @@ export default function Library({ api, onUseAsSource, onOpenProject }) {
 
   useEffect(() => { refresh(); }, [api, tab, sort]); // eslint-disable-line
   useEffect(() => {
+    axios.post(`${api}/library/thumbs`).then(() => refresh()).catch(() => {});
+  }, [api]); // eslint-disable-line
+  useEffect(() => {
     const id = setTimeout(refresh, 250); // debounce search
     return () => clearTimeout(id);
   }, [search]); // eslint-disable-line
@@ -151,10 +154,13 @@ export default function Library({ api, onUseAsSource, onOpenProject }) {
                      style={{
                        height:120, background:"#080807", position:"relative",
                        cursor: item.file_exists ? "pointer" : "not-allowed",
-                       backgroundImage: item.thumb_path ? `url(${api}/thumb?path=${encodeURIComponent(item.thumb_path)})` : "none",
-                       backgroundSize:"cover", backgroundPosition:"center",
+                       overflow:"hidden",
                      }}>
-                  {!item.thumb_path && (
+                  {item.thumb_path ? (
+                    <img src={`${api}/thumb?path=${encodeURIComponent(item.thumb_path)}`}
+                         alt=""
+                         style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }}/>
+                  ) : (
                     <div style={{ position:"absolute", inset:0, display:"flex",
                                   alignItems:"center", justifyContent:"center",
                                   color:C.border, fontSize:32 }}>▶</div>
@@ -216,7 +222,8 @@ export default function Library({ api, onUseAsSource, onOpenProject }) {
                       display:"flex", flexDirection:"column", alignItems:"center",
                       justifyContent:"center", gap:12 }}
              onClick={() => setPreview(null)}>
-          <video src={videoSrc(preview.path)} controls autoPlay onClick={e => e.stopPropagation()}
+          <video src={videoSrc(preview.path)} controls autoPlay playsInline
+                 onClick={e => e.stopPropagation()}
                  style={{ maxWidth:"90vw", maxHeight:"80vh", background:"#000",
                           border:`1px solid ${C.border}`, borderRadius:4 }}/>
           <div style={{ fontSize:10, color:C.muted, fontFamily:C.mono }}>{preview.title} — click outside to close</div>

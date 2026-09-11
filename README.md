@@ -1,4 +1,4 @@
-# AutoSubs
+# BananaCut
 
 Desktop app (Electron + React + FastAPI/Whisper) for cutting, reframing,
 subtitling and clip-finding video for Shorts/Reels — with an in-app
@@ -8,8 +8,8 @@ library, saved projects and local usage stats/badges.
 
 Grab the latest installer from the [Releases page](https://github.com/sepetovski/Autosubs-app/releases):
 
-- **Windows** — `AutoSubs-Setup-x.y.z.exe`
-- **macOS (Apple Silicon)** — `AutoSubs-x.y.z-arm64.dmg`
+- **Windows** — `BananaCut-Setup-x.y.z.exe`
+- **macOS (Apple Silicon)** — `BananaCut-x.y.z-arm64.dmg`
 
 On first launch the app downloads a one-time ~300MB runtime (Python +
 Whisper + ffmpeg) before it's usable — this only happens once per major
@@ -21,12 +21,12 @@ The installer isn't code-signed yet, so Windows SmartScreen will warn on
 first run. Click **More info → Run anyway**. The app still auto-updates
 normally afterwards.
 
-### macOS: "AutoSubs is damaged and can't be opened"
+### macOS: "BananaCut is damaged and can't be opened"
 
 The macOS build isn't notarized yet, so Gatekeeper blocks it by default.
 Either:
 - Right-click (or Control-click) the app in Applications → **Open** → **Open** again, or
-- Run in Terminal: `xattr -cr /Applications/AutoSubs.app`
+- Run in Terminal: `xattr -cr /Applications/BananaCut.app`
 
 macOS builds don't auto-install updates (Apple requires a paid Developer
 ID + notarization for that) — the app instead shows a banner linking to

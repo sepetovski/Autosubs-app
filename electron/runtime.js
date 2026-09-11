@@ -1,5 +1,5 @@
 /**
- * AutoSubs — Runtime manager
+ * BananaCut — Runtime manager
  *
  * The Electron app installer only ships main.js/preload.js/the frontend
  * bundle/the backend .py source (all small, all auto-updated together).
@@ -49,7 +49,7 @@ function download(url, destPath, onProgress, redirectsLeft = 5) {
     const client = url.startsWith('https:') ? https : http;
     const partPath = `${destPath}.part`;
     const file = fs.createWriteStream(partPath);
-    const req = client.get(url, { headers: { 'User-Agent': 'AutoSubs-App' } }, (res) => {
+    const req = client.get(url, { headers: { 'User-Agent': 'BananaCut-App' } }, (res) => {
       if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
         file.close();
         fs.unlink(partPath, () => {});
@@ -141,7 +141,7 @@ async function ensureRuntime(manifestPath, userDataDir, onProgress = () => {}) {
   const tmpArchive = path.join(os.tmpdir(), `autosubs-runtime-${manifest.version}-${key}.tar.gz`);
   fs.rmSync(tmpArchive, { force: true });
 
-  onProgress({ phase: 'download', pct: 0, text: 'Downloading AutoSubs runtime (one-time, ~300MB)…' });
+  onProgress({ phase: 'download', pct: 0, text: 'Downloading BananaCut runtime (one-time, ~300MB)…' });
   await download(asset.url, tmpArchive, ({ received, total }) => {
     const pct = total ? Math.round((received / total) * 100) : 0;
     onProgress({

@@ -7,6 +7,20 @@ const net = require('net');
 const path = require('path');
 const runtime = require('./runtime');
 
+// Must run before app ready. Windows Chromium promotes <video> to a
+// DirectComposition overlay that paints ON TOP of all HTML (crop dimming,
+// subtitle preview, add-text), ignoring z-index. DevTools screenshots still
+// show those layers, so the real window looks like the overlays are missing.
+app.commandLine.appendSwitch(
+  'disable-features',
+  'DirectCompositionVideoOverlay,DirectCompositionOverlays'
+);
+app.disableHardwareAcceleration();
+
+// Keep the existing userData folder so the already-downloaded runtime
+// and library survive the BananaCut rename.
+app.setPath('userData', path.join(app.getPath('appData'), 'autosubs'));
+
 let backendProcess  = null;
 let mainWindow       = null;
 let apiPort           = 8742;
@@ -28,6 +42,24 @@ if (!gotLock) {
 }
 
 const FRONTEND_URL = 'http://localhost:5173';
+
+function appIconPath() {
+  const packaged = path.join(process.resourcesPath, 'icon.png');
+  const dev = path.join(__dirname, 'build', 'icon.png');
+  if (app.isPackaged && fs.existsSync(packaged)) return packaged;
+  if (fs.existsSync(dev)) return dev;
+  return undefined;
+}
+
+function logoDataUrl() {
+  const p = appIconPath();
+  if (!p) return '';
+  try {
+    return `data:image/png;base64,${fs.readFileSync(p).toString('base64')}`;
+  } catch {
+    return '';
+  }
+}
 
 const USE_BUILT_FILES = app.isPackaged || process.env.ELECTRON_LOAD_DIST === 'true';
 
@@ -65,7 +97,8 @@ function loadingHtml() {
     <body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
                  background:#111010;color:#d6d3cd;font-family:Courier,monospace;">
       <div style="text-align:center;width:340px;">
-        <div style="font-size:20px;font-weight:bold;margin-bottom:8px;">AutoSubs</div>
+        ${logoDataUrl() ? `<img src="${logoDataUrl()}" alt="" style="width:72px;height:72px;border-radius:16px;margin-bottom:10px;"/>` : ''}
+        <div style="font-size:20px;font-weight:bold;margin-bottom:8px;">BananaCut</div>
         <div id="txt" style="font-size:12px;color:#8c887d;margin-bottom:10px;">Starting up…</div>
         <div style="height:6px;border-radius:3px;background:#211f1c;overflow:hidden;">
           <div id="bar" style="height:100%;width:0%;background:#d97706;transition:width .2s ease;"></div>
@@ -149,7 +182,7 @@ async function startBackend() {
   env.AUTOSUBS_DATA_DIR   = app.getPath('userData');
   env.AUTOSUBS_MODELS_DIR = path.join(app.getPath('userData'), 'models');
 
-  sendBoot({ phase: 'starting', pct: 95, text: 'Starting AutoSubs engine…' });
+  sendBoot({ phase: 'starting', pct: 95, text: 'Starting BananaCut engine…' });
 
   logLine(`Spawning backend: ${pythonExe} server.py --port ${apiPort} (cwd=${BACKEND_DIR})`);
   backendProcess = spawn(pythonExe, ['server.py', '--port', String(apiPort)],
@@ -206,6 +239,8 @@ function createWindow() {
     height: 900,
     minWidth: 1000,
     minHeight: 700,
+    title: 'BananaCut',
+    icon: appIconPath(),
     backgroundColor: '#111010',
     webPreferences: {
       contextIsolation: true,
@@ -299,7 +334,7 @@ function checkForUpdates() {
     https.get({
       hostname: 'api.github.com',
       path: '/repos/sepetovski/Autosubs-app/releases/latest',
-      headers: { 'User-Agent': 'AutoSubs-App' },
+      headers: { 'User-Agent': 'BananaCut-App' },
     }, (res) => {
       let body = '';
       res.on('data', (d) => (body += d));

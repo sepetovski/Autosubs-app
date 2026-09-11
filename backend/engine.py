@@ -451,25 +451,37 @@ def get_video_info(video_path):
     except Exception:
         return None
 
-THUMB_W, THUMB_H = 200, 113
+THUMB_W, THUMB_H = 200, 112
+
+def _ffmpeg_kwargs():
+    kw = dict(capture_output=True, timeout=15, stdin=subprocess.DEVNULL)
+    if IS_WIN:
+        kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return kw
 
 def extract_thumb(video_path, t=0):
+    """Grab one JPEG frame. Resize/pad in Pillow — newer ffmpeg builds
+    (the ones we ship in the runtime) reject the old pad=…:color=hex
+    filtergraph, which made every thumbnail come back empty."""
     ffmpeg_exe, _ = find_ffmpeg()
-    if not ffmpeg_exe: ffmpeg_exe = "ffmpeg"
+    if not ffmpeg_exe:
+        ffmpeg_exe = "ffmpeg"
     try:
         cmd = [
-            ffmpeg_exe, "-y", "-ss", str(t), "-i", str(video_path),
-            "-vframes", "1", "-an",
-            "-vf", (f"scale={THUMB_W}:{THUMB_H}:force_original_aspect_ratio=decrease,"
-                    f"pad={THUMB_W}:{THUMB_H}:(ow-iw)/2:(oh-ih)/2:color=161513"),
-            "-f", "image2", "pipe:1",
+            ffmpeg_exe, "-hide_banner", "-nostdin", "-y",
+            "-ss", str(max(0, t)), "-i", str(video_path),
+            "-frames:v", "1", "-an", "-f", "mjpeg", "pipe:1",
         ]
-        r = subprocess.run(cmd, capture_output=True, timeout=12)
-        if r.returncode == 0 and r.stdout:
-            return Image.open(io.BytesIO(r.stdout)).convert("RGB")
+        r = subprocess.run(cmd, **_ffmpeg_kwargs())
+        if r.returncode != 0 or not r.stdout:
+            return None
+        img = Image.open(io.BytesIO(r.stdout)).convert("RGB")
+        img.thumbnail((THUMB_W, THUMB_H))
+        canvas = Image.new("RGB", (THUMB_W, THUMB_H), (22, 21, 19))
+        canvas.paste(img, ((THUMB_W - img.width) // 2, (THUMB_H - img.height) // 2))
+        return canvas
     except Exception:
-        pass
-    return None
+        return None
 
 def fmt_dur(sec):
     sec = int(sec or 0)

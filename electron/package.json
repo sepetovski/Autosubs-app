@@ -1,7 +1,7 @@
 {
   "name": "autosubs",
-  "version": "1.0.1",
-  "description": "AutoSubs App",
+  "version": "1.0.2",
+  "description": "BananaCut — cut, reframe and subtitle short-form video",
   "author": "sepetovski",
   "main": "main.js",
   "scripts": {
@@ -12,22 +12,28 @@
   },
   "build": {
     "appId": "com.autosubs.app",
-    "productName": "AutoSubs",
+    "productName": "BananaCut",
+    "icon": "build/icon.png",
     "asar": true,
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "build"
     },
     "files": [
       "main.js",
       "preload.js",
-      "runtime.js"
+      "runtime.js",
+      "build/icon.png"
     ],
     "extraResources": [
       { "from": "../backend", "to": "backend", "filter": ["**/*.py", "assets/**/*"] },
       { "from": "../frontend/dist", "to": "frontend-dist" },
-      { "from": "runtime.json", "to": "runtime.json" }
+      { "from": "runtime.json", "to": "runtime.json" },
+      { "from": "build/icon.png", "to": "icon.png" }
     ],
     "win": {
+      "icon": "build/icon.ico",
+      "executableName": "BananaCut",
       "target": [
         { "target": "nsis", "arch": ["x64"] }
       ]
@@ -36,9 +42,13 @@
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
+      "createDesktopShortcut": true,
+      "shortcutName": "BananaCut",
+      "uninstallDisplayName": "BananaCut",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
     },
     "mac": {
+      "icon": "build/icon.png",
       "target": [
         { "target": "dmg", "arch": ["arm64"] },
         { "target": "zip", "arch": ["arm64"] }

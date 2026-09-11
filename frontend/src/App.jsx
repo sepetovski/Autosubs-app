@@ -63,8 +63,11 @@ function fmtElapsed(ms) {
 }
 
 function containRect(containerW, containerH, contentW, contentH) {
-  if (!containerW || !containerH || !contentW || !contentH) {
+  if (!containerW || !containerH) {
     return { left: 0, top: 0, width: 0, height: 0 };
+  }
+  if (!contentW || !contentH) {
+    return { left: 0, top: 0, width: containerW, height: containerH };
   }
   const containerRatio = containerW / containerH;
   const contentRatio   = contentW / contentH;
@@ -250,22 +253,34 @@ function Timeline({ duration, inPoint, outPoint, currentTime,
 }
 
 // ── Crop guide overlay ─────────────────────────────────────────────────────────
+// Four dimming panels (not a giant box-shadow) so Chromium still composites
+// the hardware video layer, and so subtitle/text previews stay visible.
 function CropGuide({ rect, label }) {
   if (!rect || !rect.width) return null;
+  const dim = {
+    position: "absolute", background: "rgba(0,0,0,0.65)",
+    pointerEvents: "none", zIndex: 2,
+  };
   return (
-    <div style={{
-      position:"absolute", left:rect.left, top:rect.top,
-      width:rect.width, height:rect.height,
-      border:`2px solid ${C.accent}`,
-      boxShadow:"0 0 0 9999px rgba(0,0,0,0.65)",
-      pointerEvents:"none", zIndex:5,
-    }}>
+    <>
+      <div style={{ ...dim, left: 0, top: 0, right: 0, height: Math.max(0, rect.top) }} />
+      <div style={{ ...dim, left: 0, top: rect.top + rect.height, right: 0, bottom: 0 }} />
+      <div style={{ ...dim, left: 0, top: rect.top, width: Math.max(0, rect.left), height: rect.height }} />
+      <div style={{ ...dim, left: rect.left + rect.width, top: rect.top, right: 0, height: rect.height }} />
       <div style={{
-        position:"absolute", top:6, left:6,
-        fontSize:9, color:"#fff", background:"rgba(0,0,0,0.55)",
-        padding:"2px 6px", borderRadius:2, fontFamily:C.mono, letterSpacing:1,
-      }}>{label}</div>
-    </div>
+        position: "absolute", left: rect.left, top: rect.top,
+        width: rect.width, height: rect.height,
+        border: `2px solid ${C.accent}`,
+        boxSizing: "border-box",
+        pointerEvents: "none", zIndex: 3,
+      }}>
+        <div style={{
+          position: "absolute", top: 6, left: 6,
+          fontSize: 9, color: "#fff", background: "rgba(0,0,0,0.55)",
+          padding: "2px 6px", borderRadius: 2, fontFamily: C.mono, letterSpacing: 1,
+        }}>{label}</div>
+      </div>
+    </>
   );
 }
 
@@ -304,9 +319,9 @@ function SubPreview({ stageRect, outputDims, subtitleY, colorBase, colorActive,
       style={{
         position:"absolute", left:stageRect.left, width:stageRect.width,
         top:stageRect.top + subtitleY * stageRect.height,
-        transform:"translateY(-50%)",
-        textAlign:"center", cursor:"ns-resize", zIndex:60,
+        textAlign:"center", cursor:"ns-resize", zIndex:5,
         userSelect:"none", padding:"2px 4px",
+        pointerEvents:"auto", transform:"translateY(-50%) translateZ(0)",
       }}>
       <span style={{ color:colorBase, fontSize:baseFs, fontWeight:"bold",
                      textShadow:shadow, fontFamily:fnt }}>SAMPLE{" "}</span>
@@ -352,9 +367,9 @@ function TextOverlayPreview({ item, stageRect, outputDims, onYChange, viewerRef 
       style={{
         position:"absolute", left:stageRect.left, width:stageRect.width,
         top:stageRect.top + item.y * stageRect.height,
-        transform:"translateY(-50%)",
-        textAlign:"center", cursor:"ns-resize", zIndex:55,
+        textAlign:"center", cursor:"ns-resize", zIndex:5,
         userSelect:"none", padding:"2px 4px",
+        pointerEvents:"auto", transform:"translateY(-50%) translateZ(0)",
       }}>
       <span style={{
         color: isEmpty ? "rgba(255,255,255,0.4)" : item.color,
@@ -463,6 +478,7 @@ export default function App() {
 
   const videoElRef      = useRef(null);
   const videoCleanupRef = useRef(null);
+  const previewCanvasRef = useRef(null);
   const viewerRef  = useRef(null);
   const logsEndRef = useRef(null);
   const evtSrcRef  = useRef(null);
@@ -934,10 +950,88 @@ export default function App() {
     ? (videoInfo ? { w: videoInfo.width, h: videoInfo.height } : { w: 1920, h: 1080 })
     : (OUTPUT_DIMS[aspect] || { w: 1080, h: 1920 });
 
-  const fullFrameVideoHeight = (videoInfo && stageRect.width)
-    ? stageRect.width / (videoInfo.width / videoInfo.height) : 0;
-  const fullFrameVideoTop = isFullFrame
-    ? (stageRect.height - fullFrameVideoHeight) * videoYOffset : 0;
+  // Paint onto a <canvas>, not the <video> element. Windows Chromium promotes
+  // <video> to a hardware overlay that covers every HTML layer (crop frame,
+  // subtitles, add-text), so those can never be visible on top of it.
+  useEffect(() => {
+    const canvas = previewCanvasRef.current;
+    if (!canvas || !videoInfo) return;
+
+    const cssW = isFullFrame
+      ? Math.max(1, Math.round(stageRect.width))
+      : Math.max(1, Math.round(videoDisplayRect.width));
+    const cssH = isFullFrame
+      ? Math.max(1, Math.round(stageRect.height))
+      : Math.max(1, Math.round(videoDisplayRect.height));
+    if (canvas.width !== cssW) canvas.width = cssW;
+    if (canvas.height !== cssH) canvas.height = cssH;
+
+    let raf = 0;
+    const paint = () => {
+      const v = videoElRef.current;
+      const ctx = canvas.getContext("2d");
+      if (v && v.readyState >= 2 && canvas.width && canvas.height) {
+        const vw = v.videoWidth || videoInfo.width;
+        const vh = v.videoHeight || videoInfo.height;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        if (isFullFrame) {
+          ctx.fillStyle = bgColor || "#000";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          const scale = Math.min(canvas.width / vw, canvas.height / vh);
+          const dw = vw * scale;
+          const dh = vh * scale;
+          const dx = (canvas.width - dw) / 2;
+          const dy = (canvas.height - dh) * videoYOffset;
+          ctx.drawImage(v, 0, 0, vw, vh, dx, dy, dw, dh);
+          ctx.strokeStyle = "#b45309";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
+          const ffLabel = `9:16 FULL FRAME  ·  ${outputDims.w}×${outputDims.h}`;
+          ctx.font = "bold 11px Courier, monospace";
+          const ffTw = ctx.measureText(ffLabel).width;
+          ctx.fillStyle = "rgba(0,0,0,0.55)";
+          ctx.fillRect(6, 6, ffTw + 12, 16);
+          ctx.fillStyle = "#fff";
+          ctx.fillText(ffLabel, 12, 18);
+        } else {
+          ctx.drawImage(v, 0, 0, vw, vh, 0, 0, canvas.width, canvas.height);
+          if (isCrop) {
+            const { fx, fy, fw, fh } = cropFractions(vw, vh, ASPECT_RATIOS[aspect]);
+            const rx = fx * canvas.width;
+            const ry = fy * canvas.height;
+            const rw = fw * canvas.width;
+            const rh = fh * canvas.height;
+            ctx.fillStyle = "rgba(0,0,0,0.65)";
+            ctx.fillRect(0, 0, canvas.width, ry);
+            ctx.fillRect(0, ry + rh, canvas.width, canvas.height - (ry + rh));
+            ctx.fillRect(0, ry, rx, rh);
+            ctx.fillRect(rx + rw, ry, canvas.width - (rx + rw), rh);
+            ctx.strokeStyle = "#b45309";
+            ctx.lineWidth = 2;
+            ctx.strokeRect(rx + 1, ry + 1, Math.max(0, rw - 2), Math.max(0, rh - 2));
+            ctx.font = "bold 11px Courier, monospace";
+            ctx.fillStyle = "#fff";
+            const label = `${aspect}  ·  ${outputDims.w}×${outputDims.h}`;
+            const pad = 6;
+            const tw = ctx.measureText(label).width;
+            ctx.fillStyle = "rgba(0,0,0,0.55)";
+            ctx.fillRect(rx + 6, ry + 6, tw + pad * 2, 16);
+            ctx.fillStyle = "#fff";
+            ctx.fillText(label, rx + 6 + pad, ry + 18);
+          }
+        }
+      }
+      raf = requestAnimationFrame(paint);
+    };
+    raf = requestAnimationFrame(paint);
+    return () => cancelAnimationFrame(raf);
+  }, [
+    videoInfo, videoSrc, isFullFrame, isCrop, aspect, bgColor, videoYOffset,
+    videoDisplayRect.width, videoDisplayRect.height,
+    stageRect.width, stageRect.height,
+    outputDims.w, outputDims.h,
+  ]);
 
   return (
     <div style={{ display:"flex", flexDirection:"column", height:"100vh", background:C.bg,
@@ -1359,31 +1453,50 @@ export default function App() {
           background:"#080807", minHeight:0,
         }}>
           {videoSrc && videoInfo ? (
-            <div style={{
-              position:"absolute",
-              left:   isFullFrame ? stageRect.left   : videoDisplayRect.left,
-              top:    isFullFrame ? stageRect.top    : videoDisplayRect.top,
-              width:  isFullFrame ? stageRect.width  : videoDisplayRect.width,
-              height: isFullFrame ? stageRect.height : videoDisplayRect.height,
-              background: isFullFrame ? bgColor : "transparent",
-              overflow: "hidden",
-            }}>
+            <>
+              {isFullFrame && (
+                <div style={{
+                  position: "absolute",
+                  left: stageRect.left, top: stageRect.top,
+                  width: stageRect.width, height: stageRect.height,
+                  background: bgColor, zIndex: 0, pointerEvents: "none",
+                }} />
+              )}
               <video
                 key={videoPath}
                 ref={setVideoRef}
                 src={videoSrc}
+                playsInline
                 preload="auto"
-                onClick={togglePlay}
                 style={{
-                  position: isFullFrame ? "absolute" : "static",
-                  left: 0,
-                  top: isFullFrame ? fullFrameVideoTop : 0,
-                  width: "100%",
-                  height: isFullFrame ? "auto" : "100%",
-                  display: "block", cursor: "pointer", outline: "none",
+                  position: "absolute",
+                  width: 1, height: 1, opacity: 0,
+                  left: -9999, top: 0, pointerEvents: "none",
                 }}
               />
-            </div>
+              <canvas
+                ref={previewCanvasRef}
+                onClick={togglePlay}
+                style={{
+                  position: "absolute",
+                  left: isFullFrame
+                    ? stageRect.left
+                    : (videoDisplayRect.width ? videoDisplayRect.left : 0),
+                  top: isFullFrame
+                    ? stageRect.top
+                    : (videoDisplayRect.height ? videoDisplayRect.top : 0),
+                  width: isFullFrame
+                    ? stageRect.width
+                    : (videoDisplayRect.width || "100%"),
+                  height: isFullFrame
+                    ? stageRect.height
+                    : (videoDisplayRect.height || "100%"),
+                  display: "block",
+                  cursor: "pointer",
+                  zIndex: 1,
+                }}
+              />
+            </>
           ) : (
             <div style={{ position:"absolute", inset:0, display:"flex",
                           flexDirection:"column", alignItems:"center",
@@ -1399,39 +1512,32 @@ export default function App() {
             </div>
           )}
 
-          {isCrop && videoInfo && (
-            <CropGuide rect={stageRect} label={`${aspect}  ·  ${outputDims.w}×${outputDims.h}`}/>
-          )}
-
-          {isFullFrame && videoInfo && (
+          {videoInfo && (
             <div style={{
-              position:"absolute", left:stageRect.left + 6, top:stageRect.top + 6,
-              fontSize:9, color:"#fff", background:"rgba(0,0,0,0.55)",
-              padding:"2px 6px", borderRadius:2, fontFamily:C.mono,
-              letterSpacing:1, zIndex:6, pointerEvents:"none",
+              position: "absolute", inset: 0, zIndex: 10,
+              transform: "translateZ(0)", isolation: "isolate",
+              pointerEvents: "none",
             }}>
-              9:16 FULL FRAME · {outputDims.w}×{outputDims.h}
+              {textOverlays.map(t => (
+                <TextOverlayPreview
+                  key={t.id}
+                  item={t}
+                  stageRect={stageRect}
+                  outputDims={outputDims}
+                  onYChange={(y) => updateOverlay(t.id, { y })}
+                  viewerRef={viewerRef}
+                />
+              ))}
+
+              {addSubtitles && (
+                <SubPreview
+                  stageRect={stageRect} outputDims={outputDims} subtitleY={subtitleY}
+                  colorBase={colorBase} colorActive={colorActive}
+                  baseSize={baseSize} activeSize={activeSize}
+                  onYChange={setSubtitleY} viewerRef={viewerRef}
+                />
+              )}
             </div>
-          )}
-
-          {videoInfo && textOverlays.map(t => (
-            <TextOverlayPreview
-              key={t.id}
-              item={t}
-              stageRect={stageRect}
-              outputDims={outputDims}
-              onYChange={(y) => updateOverlay(t.id, { y })}
-              viewerRef={viewerRef}
-            />
-          ))}
-
-          {videoInfo && addSubtitles && (
-            <SubPreview
-              stageRect={stageRect} outputDims={outputDims} subtitleY={subtitleY}
-              colorBase={colorBase} colorActive={colorActive}
-              baseSize={baseSize} activeSize={activeSize}
-              onYChange={setSubtitleY} viewerRef={viewerRef}
-            />
           )}
         </div>
 
@@ -1501,7 +1607,9 @@ function TopNav({ view, setView, backendCrashed, restartingBackend, onRestartBac
       <div style={{ display:"flex", alignItems:"center", gap:2,
                     padding:"8px 14px", borderBottom:`3px solid ${C.accent}`,
                     background:C.surface }}>
-        <span style={{ fontSize:16, fontWeight:"bold", marginRight:4 }}>AutoSubs</span>
+        <img src="./logo.png" alt=""
+             style={{ width:22, height:22, borderRadius:5, marginRight:2, objectFit:"cover" }}/>
+        <span style={{ fontSize:16, fontWeight:"bold", marginRight:8 }}>BananaCut</span>
         {tabs.map(t => (
           <button key={t.id} onClick={() => setView(t.id)}
                   style={{
@@ -1533,7 +1641,7 @@ function TopNav({ view, setView, backendCrashed, restartingBackend, onRestartBac
         <div style={{ background:"#450a0a", color:"#fca5a5", fontSize:10,
                       padding:"7px 14px", display:"flex", alignItems:"center",
                       gap:10 }}>
-          ⚠ The AutoSubs engine stopped unexpectedly.
+          ⚠ The BananaCut engine stopped unexpectedly.
           <button onClick={onRestartBackend} disabled={restartingBackend}
                   style={{ background:"none", border:"1px solid #fca5a5", color:"#fca5a5",
                             borderRadius:3, padding:"2px 8px", cursor:"pointer", fontSize:9 }}>

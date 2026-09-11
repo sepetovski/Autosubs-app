@@ -327,8 +327,8 @@ async def get_thumbnails(path: str, count: int = 24):
         img.save(buf, format="JPEG", quality=55)
         return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        thumbs = list(ex.map(_one, range(count)))
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        thumbs = [t for t in ex.map(_one, range(count)) if t]
 
     return {"thumbnails": thumbs, "duration": dur}
 
@@ -471,7 +471,13 @@ def library_reveal(req: RevealRequest):
 @app.post("/library/scan")
 def library_scan():
     added = library.scan_save_dir()
-    return {"added": added}
+    thumbs = library.backfill_thumbs()
+    return {"added": added, "thumbs": thumbs}
+
+
+@app.post("/library/thumbs")
+def library_thumbs():
+    return {"updated": library.backfill_thumbs()}
 
 
 # ── Projects ──────────────────────────────────────────────────────────────

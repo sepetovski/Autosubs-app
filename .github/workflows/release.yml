@@ -1,6 +1,6 @@
 name: Release
 
-# Builds and publishes the AutoSubs app installer for Windows and macOS
+# Builds and publishes the BananaCut app installer for Windows and macOS
 # whenever a version tag is pushed. This is the *small* app bundle only
 # (Electron + frontend + backend .py source) — see build-runtime.yml for
 # the separately-versioned heavy runtime that electron-updater doesn't

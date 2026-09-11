@@ -201,6 +201,27 @@ def get_media(media_id):
     return _media_row_to_dict(row) if row else None
 
 
+def backfill_thumbs():
+    """Generate missing library thumbnails (e.g. items created when the
+    old ffmpeg pad filtergraph was broken)."""
+    updated = 0
+    items = list_media()
+    for item in items:
+        existing = item.get("thumb_path")
+        if existing and os.path.exists(existing):
+            continue
+        path = item.get("path")
+        if not path or not os.path.exists(path):
+            continue
+        thumb = _make_thumbnail(path, item.get("duration"))
+        if not thumb:
+            continue
+        with _lock, _conn() as c:
+            c.execute("UPDATE media SET thumb_path = ? WHERE id = ?", (thumb, item["id"]))
+        updated += 1
+    return updated
+
+
 def update_media(media_id, patch):
     allowed = {"title", "tags"}
     fields = {k: v for k, v in patch.items() if k in allowed}
